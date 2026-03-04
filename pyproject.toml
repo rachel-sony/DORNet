@@ -23,4 +23,4 @@ readme = "dornet/README.md"
 license = {file = "dornet/LICENSE"}
 
 [tool.setuptools.package-data]
-dornet = ["models/*.pt", "configs/*.yml", "text/*.json"]
+dornet = ["checkpoints/*.pth"]
