@@ -1,0 +1,26 @@
+[project]
+name = "dornet"
+version = "2026.03.04"
+dependencies = [
+    "torch==2.1.0",
+    "numpy==1.23.5",
+    "torchvision==0.16.0",
+    "scipy==1.11.3",
+    "Pillow==10.0.1",
+    "tqdm==4.65.0",
+    "scikit-image==0.21.0",
+    "mmcv-full==1.7.2",
+]
+requires-python = ">=3.11.5"
+authors = [
+  {name = "yanzq95"}
+]
+maintainers = [
+  {name = "yanzq95"}
+]
+description = "DORNet: A Degradation Oriented and Regularized Network for Blind Depth Super-Resolution (CVPR 2025)"
+readme = "dornet/README.md"
+license = {file = "dornet/LICENSE"}
+
+[tool.setuptools.package-data]
+dornet = ["models/*.pt", "configs/*.yml", "text/*.json"]
