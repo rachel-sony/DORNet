@@ -27,8 +27,7 @@ setup(
         "Pillow>=10.0.1",
         "tqdm>=4.65.0",
         "scikit-image>=0.21.0",
-        "openmim>=0.3.9",
-        "mmcv @ https://download.openmmlab.com/mmcv/dist/cu118/torch2.1.0/mmcv-2.1.0-cp310-cp310-manylinux1_x86_64.whl",
+        # "mmcv-full",
     ],
 
     include_package_data=True,
