@@ -1,11 +1,13 @@
+import math
+
+import numpy as np
 import torch
 import torch.nn as nn
-from .deform_conv import DCN_layer_rgb
 import torch.nn.functional as F
-import math
-from net.CR import *
 from torch.distributions.normal import Normal
-import numpy as np
+
+from .CR import *
+from .deform_conv import DCN_layer_rgb
 
 
 class SparseDispatcher(object):
@@ -73,7 +75,9 @@ class SparseDispatcher(object):
 
         zeros = torch.zeros(
             (self._gates.size(0), expert_out[-1].size(1), expert_out[-1].size(2), expert_out[-1].size(3)),
-            requires_grad=True, device=stitched.device)
+            requires_grad=True,
+            device=stitched.device,
+        )
 
         combined = zeros.index_add(0, self._batch_index, stitched.float())
 
@@ -103,8 +107,9 @@ class DecMoE(nn.Module):
     k: an integer - how many experts to use for each batch element
     """
 
-    def __init__(self, ds_inputsize, input_size, output_size, num_experts, hidden_size, noisy_gating=True, k=2,
-                 trainingmode=True):
+    def __init__(
+        self, ds_inputsize, input_size, output_size, num_experts, hidden_size, noisy_gating=True, k=2, trainingmode=True
+    ):
         super(DecMoE, self).__init__()
         self.noisy_gating = noisy_gating
         self.num_experts = num_experts
@@ -115,8 +120,13 @@ class DecMoE(nn.Module):
         self.k = k
         # instantiate experts
         self.experts = nn.ModuleList(
-            [generateKernel(hidden_size, 3), generateKernel(hidden_size, 5), generateKernel(hidden_size, 7),
-             generateKernel(hidden_size, 9)])
+            [
+                generateKernel(hidden_size, 3),
+                generateKernel(hidden_size, 5),
+                generateKernel(hidden_size, 7),
+                generateKernel(hidden_size, 9),
+            ]
+        )
         self.w_gate = nn.Parameter(torch.zeros(ds_inputsize, num_experts), requires_grad=True)
         self.w_noise = nn.Parameter(torch.zeros(ds_inputsize, num_experts), requires_grad=True)
 
@@ -124,7 +134,7 @@ class DecMoE(nn.Module):
         self.softmax = nn.Softmax(1)
         self.register_buffer("mean", torch.tensor([0.0]))
         self.register_buffer("std", torch.tensor([1.0]))
-        assert (self.k <= self.num_experts)
+        assert self.k <= self.num_experts
 
     def cv_squared(self, x):
         """The squared coefficient of variation of a sample.
@@ -188,19 +198,19 @@ class DecMoE(nn.Module):
 
     def noisy_top_k_gating(self, x, train, noise_epsilon=1e-2):
         """Noisy top-k gating.
-          See paper: https://arxiv.org/abs/1701.06538.
-          Args:
-            x: input Tensor with shape [batch_size, input_size]
-            train: a boolean - we only add noise at training time.
-            noise_epsilon: a float
-          Returns:
-            gates: a Tensor with shape [batch_size, num_experts]
-            load: a Tensor with shape [num_experts]
+        See paper: https://arxiv.org/abs/1701.06538.
+        Args:
+          x: input Tensor with shape [batch_size, input_size]
+          train: a boolean - we only add noise at training time.
+          noise_epsilon: a float
+        Returns:
+          gates: a Tensor with shape [batch_size, num_experts]
+          load: a Tensor with shape [num_experts]
         """
         clean_logits = x @ self.w_gate
         if self.noisy_gating and train:
             raw_noise_stddev = x @ self.w_noise
-            noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon))
+            noise_stddev = self.softplus(raw_noise_stddev) + noise_epsilon
             noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
             logits = noisy_logits
         else:
@@ -208,8 +218,8 @@ class DecMoE(nn.Module):
 
         # calculate topk + 1 that will be needed for the noisy gates
         top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
-        top_k_logits = top_logits[:, :self.k]
-        top_k_indices = top_indices[:, :self.k]
+        top_k_logits = top_logits[:, : self.k]
+        top_k_indices = top_indices[:, : self.k]
         top_k_gates = self.softmax(top_k_logits)
 
         zeros = torch.zeros_like(logits, requires_grad=True)
@@ -248,7 +258,7 @@ class CALayer(nn.Module):
             nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=True),
             nn.ReLU(inplace=True),
             nn.Conv2d(channel // reduction, channel, 1, padding=0, bias=True),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
@@ -258,16 +268,16 @@ class CALayer(nn.Module):
 
 
 class RCAB(nn.Module):
-    def __init__(
-            self, conv, n_feat, kernel_size, reduction,
-            bias=True, bn=False, act=nn.ReLU(True), res_scale=1):
+    def __init__(self, conv, n_feat, kernel_size, reduction, bias=True, bn=False, act=nn.ReLU(True), res_scale=1):
 
         super(RCAB, self).__init__()
         modules_body = []
         for i in range(2):
             modules_body.append(conv(n_feat, n_feat, kernel_size, bias=bias))
-            if bn: modules_body.append(nn.BatchNorm2d(n_feat))
-            if i == 0: modules_body.append(act)
+            if bn:
+                modules_body.append(nn.BatchNorm2d(n_feat))
+            if i == 0:
+                modules_body.append(act)
         modules_body.append(CALayer(n_feat, reduction))
         self.body = nn.Sequential(*modules_body)
         self.res_scale = res_scale
@@ -284,9 +294,17 @@ class ResidualGroup(nn.Module):
         modules_body = []
         modules_body = [
             RCAB(
-                conv, n_feat, kernel_size, reduction, bias=True, bn=False,
-                act=nn.LeakyReLU(negative_slope=0.2, inplace=True), res_scale=1) \
-            for _ in range(n_resblocks)]
+                conv,
+                n_feat,
+                kernel_size,
+                reduction,
+                bias=True,
+                bn=False,
+                act=nn.LeakyReLU(negative_slope=0.2, inplace=True),
+                res_scale=1,
+            )
+            for _ in range(n_resblocks)
+        ]
         modules_body.append(conv(n_feat, n_feat, kernel_size))
         self.body = nn.Sequential(*modules_body)
 
@@ -307,8 +325,7 @@ class ResBlock(nn.Module):
             nn.BatchNorm2d(out_feat),
         )
         self.shortcut = nn.Sequential(
-            nn.Conv2d(in_feat, out_feat, kernel_size=1, stride=stride, bias=False),
-            nn.BatchNorm2d(out_feat)
+            nn.Conv2d(in_feat, out_feat, kernel_size=1, stride=stride, bias=False), nn.BatchNorm2d(out_feat)
         )
 
     def forward(self, x):
@@ -322,7 +339,7 @@ class DaEncoder(nn.Module):
         self.E_pre = nn.Sequential(
             ResBlock(in_feat=1, out_feat=nfeats // 2, stride=1),
             ResBlock(in_feat=nfeats // 2, out_feat=nfeats, stride=1),
-            ResBlock(in_feat=nfeats, out_feat=nfeats, stride=1)
+            ResBlock(in_feat=nfeats, out_feat=nfeats, stride=1),
         )
         self.E = nn.Sequential(
             nn.Conv2d(nfeats, nfeats * 2, kernel_size=3, stride=2, padding=1),
@@ -330,7 +347,7 @@ class DaEncoder(nn.Module):
             nn.LeakyReLU(0.1, True),
             nn.Conv2d(nfeats * 2, nfeats * 4, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(nfeats * 4),
-            nn.AdaptiveAvgPool2d(1)
+            nn.AdaptiveAvgPool2d(1),
         )
 
     def forward(self, x):
@@ -347,9 +364,7 @@ class generateKernel(nn.Module):
         super(generateKernel, self).__init__()
 
         self.mlp = nn.Sequential(
-            nn.Linear(nfeats * 4, nfeats),
-            nn.LeakyReLU(0.1, True),
-            nn.Linear(nfeats, kernel_size * kernel_size)
+            nn.Linear(nfeats * 4, nfeats), nn.LeakyReLU(0.1, True), nn.Linear(nfeats, kernel_size * kernel_size)
         )
 
     def forward(self, D_Kernel):
@@ -391,16 +406,22 @@ class DR(nn.Module):
         self.dab = [DAB(), DAB(), DAB()]
         self.dab_list = nn.ModuleList(self.dab)
 
-        self.DecoderMoE = DecMoE(ds_inputsize=nfeats * 4, input_size=1, output_size=1, num_experts=num_experts,
-                                 hidden_size=nfeats,
-                                 noisy_gating=True, k=k, trainingmode=True)
+        self.DecoderMoE = DecMoE(
+            ds_inputsize=nfeats * 4,
+            input_size=1,
+            output_size=1,
+            num_experts=num_experts,
+            hidden_size=nfeats,
+            noisy_gating=True,
+            k=k,
+            trainingmode=True,
+        )
 
         self.conv = default_conv(1, 1, 1)
 
     def forward(self, lr, sr, D_Kernel):
 
-        y1 = F.interpolate(lr, scale_factor=0.125, mode='bicubic', align_corners=True,
-                           recompute_scale_factor=True)
+        y1 = F.interpolate(lr, scale_factor=0.125, mode='bicubic', align_corners=True, recompute_scale_factor=True)
         y2 = self.c1(y1)
         y3 = self.gap(y2) + self.gap2(y2)
         y4 = y3.view(y3.shape[0], -1)
@@ -430,8 +451,9 @@ class DA_rgb(nn.Module):
         self.channels_out = channels_out
         self.channels_in = channels_in
 
-        self.dcnrgb = DCN_layer_rgb(self.channels_in, self.channels_out, kernel_size,
-                                    padding=(kernel_size - 1) // 2, bias=False)
+        self.dcnrgb = DCN_layer_rgb(
+            self.channels_in, self.channels_out, kernel_size, padding=(kernel_size - 1) // 2, bias=False
+        )
 
         self.rcab1 = RCAB(default_conv, channels_out, 3, reduction)
         self.relu = nn.LeakyReLU(0.1, True)
@@ -513,8 +535,10 @@ class DSRN(nn.Module):
         self.c_d3 = ResidualGroup(conv, n_feats, 3, reduction=reduction, n_resblocks=2)
         self.c_d4 = ResidualGroup(conv, n_feats, 3, reduction=reduction, n_resblocks=2)
 
-        modules_d5 = [conv(5 * n_feats, n_feats, 1),
-                      ResidualGroup(conv, n_feats, 3, reduction=reduction, n_resblocks=2)]
+        modules_d5 = [
+            conv(5 * n_feats, n_feats, 1),
+            ResidualGroup(conv, n_feats, 3, reduction=reduction, n_resblocks=2),
+        ]
         self.c_d5 = nn.Sequential(*modules_d5)
 
         self.c_r1 = conv(n_feats, n_feats, kernel_size)
@@ -556,6 +580,7 @@ class DSRN(nn.Module):
 
         return out
 
+
 class SRN(nn.Module):
     def __init__(self, nfeats, reduction):
         super(SRN, self).__init__()
@@ -571,7 +596,7 @@ class SRN(nn.Module):
         fea, d_kernel, inter = self.Enc(x_query)
         restored = self.R(x_query, inter, rgb, fea)
 
-        return restored, d_kernel
+        return {'restored': restored, 'd_kernel': d_kernel}
 
 
 class Net(nn.Module):
@@ -592,9 +617,10 @@ class Net(nn.Module):
 
     def forward(self, x_query, rgb):
 
-        restored, d_kernel = self.srn(x_query, rgb)
+        srn_out = self.srn(x_query, rgb)
+        restored = srn_out['restored'], d_kernel = srn_out['d_kernel']
 
-        d_lr_, aux_loss = self.Dab(x_query,restored, d_kernel)
+        d_lr_, aux_loss = self.Dab(x_query, restored, d_kernel)
         CLLoss1 = self.CLLoss(d_lr_, x_query, restored)
 
-        return restored, d_lr_, aux_loss, CLLoss1
+        return {'restored': restored, 'd_lr_': d_lr_, 'aux_loss': aux_loss, 'CLLoss1': CLLoss1}
