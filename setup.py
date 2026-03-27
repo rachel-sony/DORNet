@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 import os
 
 # Helper to read README
@@ -10,13 +10,13 @@ def read_file(filename):
 
 setup(
     name="dornet",
-    version="2026.03.04",
+    version="2026.03.27",
     author="yanzq95",
     description="DORNet: A Degradation Oriented and Regularized Network for Blind Depth Super-Resolution (CVPR 2025)",
     long_description=read_file("dornet/README.md"),
     long_description_content_type="text/markdown",
     license=read_file("dornet/LICENSE"),
-    packages=find_packages(),
+    packages=['dornet'],
     python_requires=">=3.10",
 
     install_requires=[
