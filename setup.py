@@ -16,7 +16,7 @@ setup(
     long_description=read_file("dornet/README.md"),
     long_description_content_type="text/markdown",
     license=read_file("dornet/LICENSE"),
-    packages=['dornet'],
+    packages=['dornet', 'dornet.net'],
     python_requires=">=3.10",
 
     install_requires=[
