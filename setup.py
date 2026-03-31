@@ -10,7 +10,7 @@ def read_file(filename):
 
 setup(
     name="dornet",
-    version="2026.03.27",
+    version="2026.03.31",
     author="yanzq95",
     description="DORNet: A Degradation Oriented and Regularized Network for Blind Depth Super-Resolution (CVPR 2025)",
     long_description=read_file("dornet/README.md"),

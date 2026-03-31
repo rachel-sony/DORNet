@@ -618,7 +618,8 @@ class Net(nn.Module):
     def forward(self, x_query, rgb):
 
         srn_out = self.srn(x_query, rgb)
-        restored = srn_out['restored'], d_kernel = srn_out['d_kernel']
+        restored = srn_out['restored']
+        d_kernel = srn_out['d_kernel']
 
         d_lr_, aux_loss = self.Dab(x_query, restored, d_kernel)
         CLLoss1 = self.CLLoss(d_lr_, x_query, restored)
