@@ -61,12 +61,12 @@ class SparseDispatcher(object):
     def dispatch(self, degradation_kernel, index_1):
         b, c = degradation_kernel.shape
 
-        D_Kernel_exp = degradation_kernel[self._batch_index]
+        degradation_kernel_exp = degradation_kernel[self._batch_index]
 
         list1 = torch.zeros((1, self._num_experts))
         list1[0, index_1] = b
 
-        return torch.split(D_Kernel_exp, list1[0].int().tolist(), dim=0)
+        return torch.split(degradation_kernel_exp, list1[0].int().tolist(), dim=0)
 
     def combine(self, expert_out, multiply_by_gates=True):
         stitched = torch.cat(expert_out, 0).exp()
@@ -332,20 +332,20 @@ class ResBlock(nn.Module):
 
 
 class DepthEncoder(nn.Module):
-    def __init__(self, nfeats):
+    def __init__(self, n_feats):
         super(DepthEncoder, self).__init__()
 
         self.E_pre = nn.Sequential(
-            ResBlock(in_feat=1, out_feat=nfeats // 2, stride=1),
-            ResBlock(in_feat=nfeats // 2, out_feat=nfeats, stride=1),
-            ResBlock(in_feat=nfeats, out_feat=nfeats, stride=1),
+            ResBlock(in_feat=1, out_feat=n_feats // 2, stride=1),
+            ResBlock(in_feat=n_feats // 2, out_feat=n_feats, stride=1),
+            ResBlock(in_feat=n_feats, out_feat=n_feats, stride=1),
         )
         self.E = nn.Sequential(
-            nn.Conv2d(nfeats, nfeats * 2, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(nfeats * 2),
+            nn.Conv2d(n_feats, n_feats * 2, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(n_feats * 2),
             nn.LeakyReLU(0.1, True),
-            nn.Conv2d(nfeats * 2, nfeats * 4, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(nfeats * 4),
+            nn.Conv2d(n_feats * 2, n_feats * 4, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(n_feats * 4),
             nn.AdaptiveAvgPool2d(1),
         )
 
@@ -359,11 +359,11 @@ class DepthEncoder(nn.Module):
 
 
 class DegradationKernelGenerator(nn.Module):
-    def __init__(self, nfeats, kernel_size=5):
+    def __init__(self, n_feats, kernel_size=5):
         super(DegradationKernelGenerator, self).__init__()
 
         self.mlp = nn.Sequential(
-            nn.Linear(nfeats * 4, nfeats), nn.LeakyReLU(0.1, True), nn.Linear(nfeats, kernel_size * kernel_size)
+            nn.Linear(n_feats * 4, n_feats), nn.LeakyReLU(0.1, True), nn.Linear(n_feats, kernel_size * kernel_size)
         )
 
     def forward(self, degradation_kernel):
@@ -378,39 +378,41 @@ class DegradationFilter(nn.Module):
         self.conv = default_conv(1, 1, 1)
 
     def forward(self, x, degradation_kernel):
-        b, c, h, w = x.size()
-        b1, l = degradation_kernel.shape
-        kernel_size = int(math.sqrt(l))
+        batch_size, channel_size, height, width = x.size()
+        latent_batch_size, latent_dim = degradation_kernel.shape
+        kernel_size = int(math.sqrt(latent_dim))
         with torch.no_grad():
             kernel = degradation_kernel.view(-1, 1, kernel_size, kernel_size)
-            out = F.conv2d(x.view(1, -1, h, w), kernel, groups=b * c, padding=(kernel_size - 1) // 2)
-            out = out.view(b, -1, h, w)
-        out = self.conv(self.relu(out).view(b, -1, h, w))
+            out = F.conv2d(
+                x.view(1, -1, height, width), kernel, groups=batch_size * channel_size, padding=(kernel_size - 1) // 2
+            )
+            out = out.view(batch_size, -1, height, width)
+        out = self.conv(self.relu(out).view(batch_size, -1, height, width))
         return out
 
 
 class DegradationRouter(nn.Module):
-    def __init__(self, nfeats, num_experts=4, k=3):
+    def __init__(self, n_feats, num_experts=4, k=3):
         super(DegradationRouter, self).__init__()
 
         self.topK = k
         self.num_experts = num_experts
         self.start_idx = num_experts - k
 
-        self.c1 = ResBlock(in_feat=1, out_feat=nfeats, stride=1)
+        self.c1 = ResBlock(in_feat=1, out_feat=n_feats, stride=1)
         self.gap = nn.AdaptiveMaxPool2d(1)
         self.gap2 = nn.AdaptiveAvgPool2d(1)
-        self.fc1 = nn.Linear(nfeats, nfeats * 4)
+        self.fc1 = nn.Linear(n_feats, n_feats * 4)
 
         degradation_filters = [DegradationFilter(), DegradationFilter(), DegradationFilter()]
         self.degradation_filters = nn.ModuleList(degradation_filters)
 
         self.decoder_moe = DecoderMixtureOfExperts(
-            ds_inputsize=nfeats * 4,
+            ds_inputsize=n_feats * 4,
             input_size=1,
             output_size=1,
             num_experts=num_experts,
-            hidden_size=nfeats,
+            hidden_size=n_feats,
             noisy_gating=True,
             k=k,
             trainingmode=True,
@@ -426,13 +428,13 @@ class DegradationRouter(nn.Module):
         y4 = y3.view(y3.shape[0], -1)
         y5 = self.fc1(y4)
 
-        D_Kernel_list, aux_loss = self.decoder_moe(y5, degradation_kernel, loss_coef=0.02)
+        degradation_kernel_list, aux_loss = self.decoder_moe(y5, degradation_kernel, loss_coef=0.02)
 
-        sorted_D_Kernel_list = sorted(D_Kernel_list, key=lambda x: (x.size(0), x.size(1)))
+        sorted_degradation_kernel_list = sorted(degradation_kernel_list, key=lambda x: (x.size(0), x.size(1)))
 
         sum_result = None
         for iidx in range(self.start_idx, self.num_experts):
-            res_d = self.degradation_filters[iidx - self.start_idx](sr, sorted_D_Kernel_list[iidx])
+            res_d = self.degradation_filters[iidx - self.start_idx](sr, sorted_degradation_kernel_list[iidx])
             if sum_result is None:
                 sum_result = res_d
             else:
@@ -511,12 +513,12 @@ class DOFT(nn.Module):
 
 
 class DepthSuperResolutionNetwork(nn.Module):
-    def __init__(self, nfeats=64, reduction=16, conv=default_conv):
+    def __init__(self, n_feats=64, reduction=16, conv=default_conv):
         super(DepthSuperResolutionNetwork, self).__init__()
 
         kernel_size = 3
 
-        n_feats = nfeats
+        n_feats = n_feats
 
         # head module
         modules_head = [conv(1, n_feats, kernel_size)]
@@ -583,25 +585,25 @@ class DepthSuperResolutionNetwork(nn.Module):
 
 
 class SuperResolutionNetwork(nn.Module):
-    def __init__(self, nfeats, reduction):
+    def __init__(self, n_feats, reduction):
         super(SuperResolutionNetwork, self).__init__()
 
-        # Restorer
-        self.restorer = DepthSuperResolutionNetwork(nfeats=nfeats, reduction=reduction)
+        # restorer
+        self.restorer = DepthSuperResolutionNetwork(n_feats=n_feats, reduction=reduction)
 
-        # Encoder
-        self.encoder = DepthEncoder(nfeats=nfeats)
+        # encoder
+        self.encoder = DepthEncoder(n_feats=n_feats)
 
     def forward(self, x_query, rgb):
 
-        fea, d_kernel, inter = self.encoder(x_query)
+        fea, degradation_kernel, inter = self.encoder(x_query)
         restored = self.restorer(x_query, inter, rgb, fea)
 
-        return {'restored': restored, 'd_kernel': d_kernel}
+        return {'restored': restored, 'degradation_kernel': degradation_kernel}
 
 
 class Net(nn.Module):
-    """Base DORNet implementation"""
+    """DDP-enabled base DORNet implementation"""
 
     def __init__(self, tiny_model=False):
         super(Net, self).__init__()
@@ -613,8 +615,8 @@ class Net(nn.Module):
             n_feats = 64
             reduction = 16
 
-        self.srn = SuperResolutionNetwork(nfeats=n_feats, reduction=reduction)
-        self.degradation_router = DegradationRouter(nfeats=n_feats)
+        self.srn = SuperResolutionNetwork(n_feats=n_feats, reduction=reduction)
+        self.degradation_router = DegradationRouter(n_feats=n_feats)
 
         self.contrastive_loss = ContrastLoss(ablation=False)
 
@@ -622,9 +624,9 @@ class Net(nn.Module):
 
         srn_out = self.srn(x_query, rgb)
         restored = srn_out['restored']
-        d_kernel = srn_out['d_kernel']
+        degradation_kernel = srn_out['degradation_kernel']
 
-        d_lr_, aux_loss = self.degradation_router(x_query, restored, d_kernel)
-        CLLoss1 = self.contrastive_loss(d_lr_, x_query, restored)
+        degraded_depth, aux_loss = self.degradation_router(x_query, restored, degradation_kernel)
+        CLLoss1 = self.contrastive_loss(degraded_depth, x_query, restored)
 
-        return {'restored': restored, 'd_lr_': d_lr_, 'aux_loss': aux_loss, 'CLLoss1': CLLoss1}
+        return {'restored': restored, 'degraded_depth': degraded_depth, 'aux_loss': aux_loss, 'CLLoss1': CLLoss1}

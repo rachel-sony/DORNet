@@ -1,1 +1,1 @@
-from .dornet import Net as DORNet
+from .dornet_ddp import Net as DORNet
