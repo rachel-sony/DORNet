@@ -1,12 +1,12 @@
 import argparse
 from net.dornet import Net
-from net.CR import *
+from net.contrast_loss import ContrastLoss
 
 from data.rgbdd_dataloader import *
 from data.nyu_dataloader import *
 
 from utils import calc_rmse, rgbdd_calc_rmse
- 
+
 from torch.utils.data import Dataset
 from torchvision import transforms, utils
 import torch

@@ -6,8 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
-from .CR import *
-from .deform_conv import DCN_layer_rgb
+from .contrast_loss import ContrastLoss
+from .deform_conv import DeformableConvRGB
 
 
 class SparseDispatcher(object):
@@ -58,10 +58,10 @@ class SparseDispatcher(object):
         gates_exp = gates[self._batch_index.flatten()]
         self._nonzero_gates = torch.gather(gates_exp, 1, self._expert_index)
 
-    def dispatch(self, D_Kernel, index_1):
-        b, c = D_Kernel.shape
+    def dispatch(self, degradation_kernel, index_1):
+        b, c = degradation_kernel.shape
 
-        D_Kernel_exp = D_Kernel[self._batch_index]
+        D_Kernel_exp = degradation_kernel[self._batch_index]
 
         list1 = torch.zeros((1, self._num_experts))
         list1[0, index_1] = b
@@ -96,7 +96,7 @@ class SparseDispatcher(object):
         return torch.split(self._nonzero_gates, self._part_sizes, dim=0)
 
 
-class DecMoE(nn.Module):
+class DecoderMixtureOfExperts(nn.Module):
     """Call a Sparsely gated mixture of experts layer with 1-layer Feed-Forward networks as experts.
     Args:
     input_size: integer - size of the input
@@ -110,7 +110,7 @@ class DecMoE(nn.Module):
     def __init__(
         self, ds_inputsize, input_size, output_size, num_experts, hidden_size, noisy_gating=True, k=2, trainingmode=True
     ):
-        super(DecMoE, self).__init__()
+        super(DecoderMixtureOfExperts, self).__init__()
         self.noisy_gating = noisy_gating
         self.num_experts = num_experts
         self.output_size = output_size
@@ -121,10 +121,10 @@ class DecMoE(nn.Module):
         # instantiate experts
         self.experts = nn.ModuleList(
             [
-                generateKernel(hidden_size, 3),
-                generateKernel(hidden_size, 5),
-                generateKernel(hidden_size, 7),
-                generateKernel(hidden_size, 9),
+                DegradationKernelGenerator(hidden_size, 3),
+                DegradationKernelGenerator(hidden_size, 5),
+                DegradationKernelGenerator(hidden_size, 7),
+                DegradationKernelGenerator(hidden_size, 9),
             ]
         )
         self.w_gate = nn.Parameter(torch.zeros(ds_inputsize, num_experts), requires_grad=True)
@@ -231,7 +231,7 @@ class DecMoE(nn.Module):
             load = self._gates_to_load(gates)
         return gates, load, top_k_indices[0]
 
-    def forward(self, x_ds, D_Kernel, loss_coef=1e-2):
+    def forward(self, x_ds, degradation_kernel, loss_coef=1e-2):
         gates, load, index_1 = self.noisy_top_k_gating(x_ds, self.training)
         # calculate importance loss
         importance = gates.sum(0)
@@ -240,9 +240,8 @@ class DecMoE(nn.Module):
         loss *= loss_coef
 
         dispatcher = SparseDispatcher(self.num_experts, gates)
-        expert_kernel = dispatcher.dispatch(D_Kernel, index_1)
+        expert_kernel = dispatcher.dispatch(degradation_kernel, index_1)
         expert_outputs = [self.experts[i](expert_kernel[i]) for i in range(self.num_experts)]
-
         return expert_outputs, loss
 
 
@@ -250,9 +249,9 @@ def default_conv(in_channels, out_channels, kernel_size, bias=True):
     return nn.Conv2d(in_channels, out_channels, kernel_size, padding=(kernel_size // 2), bias=bias)
 
 
-class CALayer(nn.Module):
+class ChannelAttention(nn.Module):
     def __init__(self, channel, reduction=16):
-        super(CALayer, self).__init__()
+        super(ChannelAttention, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.conv_du = nn.Sequential(
             nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=True),
@@ -267,10 +266,10 @@ class CALayer(nn.Module):
         return x * y
 
 
-class RCAB(nn.Module):
+class ResidualChannelAttentionBlock(nn.Module):
     def __init__(self, conv, n_feat, kernel_size, reduction, bias=True, bn=False, act=nn.ReLU(True), res_scale=1):
 
-        super(RCAB, self).__init__()
+        super(ResidualChannelAttentionBlock, self).__init__()
         modules_body = []
         for i in range(2):
             modules_body.append(conv(n_feat, n_feat, kernel_size, bias=bias))
@@ -278,7 +277,7 @@ class RCAB(nn.Module):
                 modules_body.append(nn.BatchNorm2d(n_feat))
             if i == 0:
                 modules_body.append(act)
-        modules_body.append(CALayer(n_feat, reduction))
+        modules_body.append(ChannelAttention(n_feat, reduction))
         self.body = nn.Sequential(*modules_body)
         self.res_scale = res_scale
 
@@ -293,7 +292,7 @@ class ResidualGroup(nn.Module):
         super(ResidualGroup, self).__init__()
         modules_body = []
         modules_body = [
-            RCAB(
+            ResidualChannelAttentionBlock(
                 conv,
                 n_feat,
                 kernel_size,
@@ -332,9 +331,9 @@ class ResBlock(nn.Module):
         return nn.LeakyReLU(0.1, True)(self.backbone(x) + self.shortcut(x))
 
 
-class DaEncoder(nn.Module):
+class DepthEncoder(nn.Module):
     def __init__(self, nfeats):
-        super(DaEncoder, self).__init__()
+        super(DepthEncoder, self).__init__()
 
         self.E_pre = nn.Sequential(
             ResBlock(in_feat=1, out_feat=nfeats // 2, stride=1),
@@ -359,40 +358,40 @@ class DaEncoder(nn.Module):
         return fea, out, inter
 
 
-class generateKernel(nn.Module):
+class DegradationKernelGenerator(nn.Module):
     def __init__(self, nfeats, kernel_size=5):
-        super(generateKernel, self).__init__()
+        super(DegradationKernelGenerator, self).__init__()
 
         self.mlp = nn.Sequential(
             nn.Linear(nfeats * 4, nfeats), nn.LeakyReLU(0.1, True), nn.Linear(nfeats, kernel_size * kernel_size)
         )
 
-    def forward(self, D_Kernel):
-        D_Kernel = self.mlp(D_Kernel)
-        return D_Kernel
+    def forward(self, degradation_kernel):
+        degradation_kernel = self.mlp(degradation_kernel)
+        return degradation_kernel
 
 
-class DAB(nn.Module):
+class DegradationFilter(nn.Module):
     def __init__(self):
-        super(DAB, self).__init__()
+        super(DegradationFilter, self).__init__()
         self.relu = nn.LeakyReLU(0.1, True)
         self.conv = default_conv(1, 1, 1)
 
-    def forward(self, x, D_Kernel):
+    def forward(self, x, degradation_kernel):
         b, c, h, w = x.size()
-        b1, l = D_Kernel.shape
+        b1, l = degradation_kernel.shape
         kernel_size = int(math.sqrt(l))
         with torch.no_grad():
-            kernel = D_Kernel.view(-1, 1, kernel_size, kernel_size)
+            kernel = degradation_kernel.view(-1, 1, kernel_size, kernel_size)
             out = F.conv2d(x.view(1, -1, h, w), kernel, groups=b * c, padding=(kernel_size - 1) // 2)
             out = out.view(b, -1, h, w)
         out = self.conv(self.relu(out).view(b, -1, h, w))
         return out
 
 
-class DR(nn.Module):
+class DegradationRouter(nn.Module):
     def __init__(self, nfeats, num_experts=4, k=3):
-        super(DR, self).__init__()
+        super(DegradationRouter, self).__init__()
 
         self.topK = k
         self.num_experts = num_experts
@@ -403,10 +402,10 @@ class DR(nn.Module):
         self.gap2 = nn.AdaptiveAvgPool2d(1)
         self.fc1 = nn.Linear(nfeats, nfeats * 4)
 
-        self.dab = [DAB(), DAB(), DAB()]
-        self.dab_list = nn.ModuleList(self.dab)
+        degradation_filters = [DegradationFilter(), DegradationFilter(), DegradationFilter()]
+        self.degradation_filters = nn.ModuleList(degradation_filters)
 
-        self.DecoderMoE = DecMoE(
+        self.decoder_moe = DecoderMixtureOfExperts(
             ds_inputsize=nfeats * 4,
             input_size=1,
             output_size=1,
@@ -419,7 +418,7 @@ class DR(nn.Module):
 
         self.conv = default_conv(1, 1, 1)
 
-    def forward(self, lr, sr, D_Kernel):
+    def forward(self, lr, sr, degradation_kernel):
 
         y1 = F.interpolate(lr, scale_factor=0.125, mode='bicubic', align_corners=True, recompute_scale_factor=True)
         y2 = self.c1(y1)
@@ -427,13 +426,13 @@ class DR(nn.Module):
         y4 = y3.view(y3.shape[0], -1)
         y5 = self.fc1(y4)
 
-        D_Kernel_list, aux_loss = self.DecoderMoE(y5, D_Kernel, loss_coef=0.02)
+        D_Kernel_list, aux_loss = self.decoder_moe(y5, degradation_kernel, loss_coef=0.02)
 
         sorted_D_Kernel_list = sorted(D_Kernel_list, key=lambda x: (x.size(0), x.size(1)))
 
         sum_result = None
         for iidx in range(self.start_idx, self.num_experts):
-            res_d = self.dab_list[iidx - self.start_idx](sr, sorted_D_Kernel_list[iidx])
+            res_d = self.degradation_filters[iidx - self.start_idx](sr, sorted_D_Kernel_list[iidx])
             if sum_result is None:
                 sum_result = res_d
             else:
@@ -443,25 +442,25 @@ class DR(nn.Module):
         return out, aux_loss
 
 
-class DA_rgb(nn.Module):
+class DeformableAttentionRGB(nn.Module):
     def __init__(self, channels_in, channels_out, kernel_size, reduction):
-        super(DA_rgb, self).__init__()
+        super(DeformableAttentionRGB, self).__init__()
 
         self.kernel_size = kernel_size
         self.channels_out = channels_out
         self.channels_in = channels_in
 
-        self.dcnrgb = DCN_layer_rgb(
+        self.deform_conv_rgb = DeformableConvRGB(
             self.channels_in, self.channels_out, kernel_size, padding=(kernel_size - 1) // 2, bias=False
         )
 
-        self.rcab1 = RCAB(default_conv, channels_out, 3, reduction)
+        self.residual_channel_atn_blk = ResidualChannelAttentionBlock(default_conv, channels_out, 3, reduction)
         self.relu = nn.LeakyReLU(0.1, True)
         self.conv = default_conv(channels_in, channels_out, 3)
 
     def forward(self, x, inter, fea):
-        out1 = self.rcab1(x)
-        out2 = self.dcnrgb(out1, inter, fea)
+        out1 = self.residual_channel_atn_blk(x)
+        out2 = self.deform_conv_rgb(out1, inter, fea)
         out = self.conv(out2 + out1)
         return out
 
@@ -490,28 +489,30 @@ class FusionBlock(nn.Module):
 
 
 class DOFT(nn.Module):
+    """Degradation-Oriented Feature Transform"""
+
     def __init__(self, channels_in, channels_out, kernel_size, reduction):
         super(DOFT, self).__init__()
         self.channels_out = channels_out
         self.channels_in = channels_in
         self.kernel_size = kernel_size
 
-        self.DA_rgb = DA_rgb(channels_in, channels_out, kernel_size, reduction)
-        self.fb = FusionBlock(channels_in, channels_out)
+        self.deform_atn_rgb = DeformableAttentionRGB(channels_in, channels_out, kernel_size, reduction)
+        self.fusion_block = FusionBlock(channels_in, channels_out)
 
         self.relu = nn.LeakyReLU(0.1, True)
 
     def forward(self, x, inter, rgb, fea):
-        rgb = self.DA_rgb(rgb, inter, fea)
+        rgb = self.deform_atn_rgb(rgb, inter, fea)
 
-        out1 = self.fb(rgb, x, inter)
+        out1 = self.fusion_block(rgb, x, inter)
         out = x + out1
         return out
 
 
-class DSRN(nn.Module):
+class DepthSuperResolutionNetwork(nn.Module):
     def __init__(self, nfeats=64, reduction=16, conv=default_conv):
-        super(DSRN, self).__init__()
+        super(DepthSuperResolutionNetwork, self).__init__()
 
         kernel_size = 3
 
@@ -581,25 +582,27 @@ class DSRN(nn.Module):
         return out
 
 
-class SRN(nn.Module):
+class SuperResolutionNetwork(nn.Module):
     def __init__(self, nfeats, reduction):
-        super(SRN, self).__init__()
+        super(SuperResolutionNetwork, self).__init__()
 
         # Restorer
-        self.R = DSRN(nfeats=nfeats, reduction=reduction)
+        self.restorer = DepthSuperResolutionNetwork(nfeats=nfeats, reduction=reduction)
 
         # Encoder
-        self.Enc = DaEncoder(nfeats=nfeats)
+        self.encoder = DepthEncoder(nfeats=nfeats)
 
     def forward(self, x_query, rgb):
 
-        fea, d_kernel, inter = self.Enc(x_query)
-        restored = self.R(x_query, inter, rgb, fea)
+        fea, d_kernel, inter = self.encoder(x_query)
+        restored = self.restorer(x_query, inter, rgb, fea)
 
         return {'restored': restored, 'd_kernel': d_kernel}
 
 
 class Net(nn.Module):
+    """Base DORNet implementation"""
+
     def __init__(self, tiny_model=False):
         super(Net, self).__init__()
 
@@ -610,10 +613,10 @@ class Net(nn.Module):
             n_feats = 64
             reduction = 16
 
-        self.srn = SRN(nfeats=n_feats, reduction=reduction)
-        self.Dab = DR(nfeats=n_feats)
+        self.srn = SuperResolutionNetwork(nfeats=n_feats, reduction=reduction)
+        self.degradation_router = DegradationRouter(nfeats=n_feats)
 
-        self.CLLoss = ContrastLoss(ablation=False)
+        self.contrastive_loss = ContrastLoss(ablation=False)
 
     def forward(self, x_query, rgb):
 
@@ -621,7 +624,7 @@ class Net(nn.Module):
         restored = srn_out['restored']
         d_kernel = srn_out['d_kernel']
 
-        d_lr_, aux_loss = self.Dab(x_query, restored, d_kernel)
-        CLLoss1 = self.CLLoss(d_lr_, x_query, restored)
+        d_lr_, aux_loss = self.degradation_router(x_query, restored, d_kernel)
+        CLLoss1 = self.contrastive_loss(d_lr_, x_query, restored)
 
         return {'restored': restored, 'd_lr_': d_lr_, 'aux_loss': aux_loss, 'CLLoss1': CLLoss1}
