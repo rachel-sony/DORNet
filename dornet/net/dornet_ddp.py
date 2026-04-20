@@ -618,7 +618,7 @@ class Net(nn.Module):
         self.srn = SuperResolutionNetwork(n_feats=n_feats, reduction=reduction)
         self.degradation_router = DegradationRouter(n_feats=n_feats)
 
-        self.contrastive_loss = ContrastLoss(ablation=False)
+        # self.contrastive_loss = ContrastLoss(ablation=False)
 
     def forward(self, x_query, rgb):
 
@@ -627,6 +627,6 @@ class Net(nn.Module):
         degradation_kernel = srn_out['degradation_kernel']
 
         degraded_depth, aux_loss = self.degradation_router(x_query, restored, degradation_kernel)
-        CLLoss1 = self.contrastive_loss(degraded_depth, x_query, restored)
+        # CLLoss1 = self.contrastive_loss(degraded_depth, x_query, restored)
 
-        return {'restored': restored, 'degraded_depth': degraded_depth, 'aux_loss': aux_loss, 'CLLoss1': CLLoss1}
+        return {'restored': restored, 'degraded_depth': degraded_depth, 'aux_loss': aux_loss} # , 'CLLoss1': CLLoss1}
